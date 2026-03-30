@@ -1,0 +1,48 @@
+name: Deploy Frontend (production)
+
+on:
+  push:
+    branches: [production]
+
+concurrency:
+  group: deploy-frontend-production
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_TOKEN }}
+
+      - name: Log in to DigitalOcean Container Registry
+        run: doctl registry login
+
+      - name: Build and push frontend image
+        env:
+          REGISTRY: registry.digitalocean.com/${{ secrets.DO_REGISTRY_NAME }}
+          IMAGE_TAG: ${{ github.sha }}
+          VITE_API_URL: ${{ secrets.VITE_API_URL }}
+        run: |
+          docker build --build-arg VITE_API_URL="$VITE_API_URL" -t "$REGISTRY/crm-frontend:$IMAGE_TAG" -f Dockerfile .
+          docker push "$REGISTRY/crm-frontend:$IMAGE_TAG"
+
+      - name: Configure kubeconfig
+        env:
+          KUBE_CONFIG_B64: ${{ secrets.KUBE_CONFIG_B64 }}
+        run: |
+          mkdir -p $HOME/.kube
+          echo "$KUBE_CONFIG_B64" | base64 -d > $HOME/.kube/config
+
+      - name: Deploy frontend (set image)
+        env:
+          REGISTRY: registry.digitalocean.com/${{ secrets.DO_REGISTRY_NAME }}
+          IMAGE_TAG: ${{ github.sha }}
+          K8S_NAMESPACE: ${{ secrets.K8S_NAMESPACE }}
+        run: |
+          kubectl -n "$K8S_NAMESPACE" set image deployment/frontend frontend="$REGISTRY/crm-frontend:$IMAGE_TAG"
+          kubectl -n "$K8S_NAMESPACE" rollout status deployment/frontend --timeout=300s
